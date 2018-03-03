@@ -2,8 +2,11 @@ package main
 
 import (
 	"crypto/md5"
+	"crypto/sha1"
 	"encoding/hex"
+	"flag"
 	"fmt"
+	"hash"
 	"io"
 	"log"
 	"os"
@@ -39,8 +42,15 @@ func computeHash(filename string) (string, error) {
 	}
 	defer file.Close()
 
-	//h := sha1.New()
-	h := md5.New()
+	var h hash.Hash
+	switch hashType {
+	case "md5":
+		h = md5.New()
+	case "sha1":
+		h = sha1.New()
+	default:
+		log.Fatalf("Invalid hash type: %s", hashType)
+	}
 	if _, err := io.Copy(h, file); err != nil {
 		log.Printf("Error hashing file: %s [%s]", filename, err)
 		return "", err
@@ -50,7 +60,7 @@ func computeHash(filename string) (string, error) {
 	return hex.EncodeToString(sum), nil
 }
 
-func genFiles(paths []string) (res chan fileWalk) {
+func genFilesRecursive(paths []string) (res chan fileWalk) {
 	res = make(chan fileWalk)
 
 	var wg sync.WaitGroup
@@ -87,6 +97,54 @@ func genFiles(paths []string) (res chan fileWalk) {
 	return
 }
 
+func genFiles(paths []string) (res chan fileWalk) {
+	res = make(chan fileWalk)
+
+	var wg sync.WaitGroup
+	for i := 0; i < len(paths); i++ {
+		wg.Add(1)
+		currentPath := paths[i]
+
+		go func() {
+			defer wg.Done()
+
+			path := func(s string) string {
+				if len(s) == 0 {
+					return "*"
+				}
+				if s[len(s)-1] == '/' {
+					return s + "*"
+				}
+				return s + "/*"
+			}(currentPath)
+
+			files, err := filepath.Glob(path)
+			if err != nil {
+				log.Printf("Error globbing %s: %s", path, err)
+				return
+			}
+
+			for _, v := range files {
+				info, err := os.Lstat(v)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				if !info.IsDir() {
+					res <- fileWalk{name: v, fi: info}
+				}
+			}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(res)
+	}()
+
+	return
+}
+
 func gatherFiles(ch <-chan fileWalk) (res chan fileAttrs) {
 	res = make(chan fileAttrs)
 
@@ -97,7 +155,10 @@ func gatherFiles(ch <-chan fileWalk) (res chan fileAttrs) {
 
 		fam := make(fileAttrsMap)
 		for f := range ch {
-			fa := fileAttrs{size: f.fi.Size(), mode: f.fi.Mode()}
+			fa := fileAttrs{size: f.fi.Size()}
+			if perm {
+				fa.mode = f.fi.Mode()
+			}
 			files, ok := fam[fa]
 			if !ok {
 				files = make([]string, 0)
@@ -197,37 +258,38 @@ func printFilenames(ch <-chan []string) {
 	}
 }
 
-func main() {
-	// main pipeline
-	genChan := genFiles(os.Args[1:])
-	gatherChan := gatherFiles(genChan)
-	hashChan := hashFiles(gatherChan)
-	distillChan := distillFiles(hashChan)
-	printFilenames(distillChan)
+var recurse bool
+var perm bool
+var hashType string
+
+func init() {
+	flag.BoolVar(&recurse, "recurse", false, "recurse")
+	flag.BoolVar(&perm, "perm", false, "consider permissions in diff")
+	flag.StringVar(&hashType, "hash", "md5", "hash type of md5 or sha1")
+	flag.Parse()
+
+	switch hashType {
+	case "md5", "sha1":
+	default:
+		log.Fatalf("Invalid hash type: %s. Expect md5 or sha1.", hashType)
+	}
 }
 
-/*
-	command line (cobra)
+func main() {
+	// main pipeline
 
-	arguments
-	* gfdupes [dir1] [dir2]
-	* check if paths overlap
+	var genChan chan fileWalk
+	if recurse {
+		genChan = genFilesRecursive(flag.Args())
+	} else {
+		genChan = genFiles(flag.Args())
+	}
 
-	flags
-	* version
-	* verbose
-	* progress bar
-	* recurse
-	* follow symlinks
-	* consider permissions in diff
-	* consider hardlink in diff
-	* delete 2-n diffs
-	* gunzip content
-	* ntfs alternate file streams
-	* hash type md5/sha/etc
-	* provide -exec option for
+	gatherChan := gatherFiles(genChan)
 
-	recursive behavior
-	* filepath.Glob for non-recursive behavior
-	* filepath.Walk for recursive behavior
-*/
+	hashChan := hashFiles(gatherChan)
+
+	distillChan := distillFiles(hashChan)
+
+	printFilenames(distillChan)
+}
