@@ -36,7 +36,7 @@ type fileAttrsExtMap map[fileAttrsExt][]string
 
 func vLog(format string, v ...interface{}) {
 	if verbose {
-		log.Printf(format, v)
+		log.Printf(format, v...)
 	}
 }
 
