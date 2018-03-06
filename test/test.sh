@@ -1,5 +1,7 @@
 #!/bin/sh
 
+go run main.go
+
 time ./gfdupes -recurse .
 time ~/dev/scratch/fdupes/fdupes -r .
 
