@@ -116,6 +116,15 @@ func genFilesRecursive(paths []string) (res chan fileWalk) {
 
 	return
 }
+func addWildCard(s string) string {
+	if len(s) == 0 {
+		return "*"
+	}
+	if s[len(s)-1] == '/' {
+		return s + "*"
+	}
+	return s + "/*"
+}
 
 func genFiles(paths []string) (res chan fileWalk) {
 	res = make(chan fileWalk, bufferSize)
@@ -128,15 +137,7 @@ func genFiles(paths []string) (res chan fileWalk) {
 		go func() {
 			defer wg.Done()
 
-			path := func(s string) string {
-				if len(s) == 0 {
-					return "*"
-				}
-				if s[len(s)-1] == '/' {
-					return s + "*"
-				}
-				return s + "/*"
-			}(currentPath)
+			path := addWildCard(currentPath)
 
 			vLog("Globbing path: %s", path)
 			files, err := filepath.Glob(path)
@@ -198,10 +199,7 @@ func gatherFiles(ch <-chan fileWalk) (res chan fileAttrs) {
 				vLog("Do not consider permissions in difference for: %s", f.name)
 			}
 
-			files, ok := fam[fa]
-			if !ok {
-				files = make([]string, 0)
-			}
+			files := fam[fa]
 			fam[fa] = append(files, f.name)
 		}
 
@@ -264,16 +262,14 @@ func distillFiles(ch <-chan fileAttrsExt) (res chan []string) {
 		faem := make(fileAttrsExtMap)
 		for f := range ch {
 			fae := fileAttrsExt{size: f.size, mode: f.mode, hash: f.hash}
-			files, ok := faem[fae]
-			if !ok {
-				files = make([]string, 0)
-			}
+			files := faem[fae]
 			faem[fae] = append(files, f.name)
 		}
 
 		for _, v := range faem {
 			if len(v) > 1 {
 				vLog("Found hashed duplicate file: %s", v)
+
 				res <- v
 			}
 		}
