@@ -3,7 +3,7 @@
 ```
 g       golang port of
 f       file
-dupes   duplicates
+dupes   duplicates (fdupes)
 c       command
 l       line
 i       interface
@@ -27,10 +27,10 @@ gfdupes is a cli written in golang used to find duplicate files. It draws inspir
 ##### Ideas
 
 * ```-size +10m -size -20m``` - multiple file size constraints [kmgtpKMGTP]
-* ```[!] -name [glob] -name ...``` - multiple basename wildcards
+* ```[!] [-not] -name [glob] -name ...``` - multiple basename wildcards
 * ```-maxdepth``` - recurse to a maximum depth
 * ```-mtime``` - modified in last n [smhdwy] units
-* ```-xdev``` - prevent recurse to different device
+* ```-xdev``` - prevent recursion across devices
 * ```-symlinks``` - follow symlinks
 * ```-hardlinks``` - hardlink in diff
 * ```-delete``` - prompt to delete
@@ -38,14 +38,27 @@ gfdupes is a cli written in golang used to find duplicate files. It draws inspir
 * ```-ntfs``` - consider ntfs alternate file streams
 * ```-exec``` - execute for each duplicate {}
 
-### Notes
+### TODO
 
-* ~~coalesce overlapping input directories~~
-* integrate cobra cli
-* add progress bar
-* support for unary operators - and, not, or
+* integrate cobra cli or hand lex/parse cli arguments
+* implement size, name, mtime cli options
+* implement unary operators - and, not, or
+* integrate cheggaaa/pb or hand build progress bar
+* integrate fatih/color or hand colorize output
 
-### Test Matrices
+### Dev Notes
+
+Uses golang concurrency pipeline pattern.
+
+```
+generate file list
+ -> gather sizes and modes 
+  -> hash duplicates concurrently
+   -> distill duplicates 
+    -> print
+```
+
+### Testing
 
 ##### Operating Systems
 
@@ -62,21 +75,13 @@ gfdupes is a cli written in golang used to find duplicate files. It draws inspir
 * btrfs, cow
 * fuse
 
-### Dev Notes
-
-Uses golang concurrency pipeline pattern.
-
-```
-generate file list
- -> gather sizes and modes 
-  -> hash duplicates concurrently
-   -> distill duplicates 
-    -> print
-```
-
-### References
+##### References
 
 * https://golang.org
 * https://blog.golang.org/pipelines
 * https://github.com/adrianlopezroche/fdupes
 * https://github.com/jbruchon/jdupes
+* https://github.com/spf13/pflag
+* https://github.com/cheggaaa/pb
+* https://github.com/vbauerster/mpb
+* https://github.com/fatih/color
