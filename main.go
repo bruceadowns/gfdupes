@@ -14,6 +14,47 @@ import (
 	"sync"
 )
 
+var theVersion = "v0.1"
+
+type args struct {
+	bufferSize  int
+	hashType    string
+	noEmpty     bool
+	noHidden    bool
+	perm        bool
+	recurse     bool
+	showVersion bool
+	verbose     bool
+}
+
+func newArgs() (res args) {
+	flag.IntVar(&res.bufferSize, "buffer", 0, "buffer size used for channel pipeline")
+	flag.StringVar(&res.hashType, "hash", "md5", "hash type of md5 or sha1")
+	flag.BoolVar(&res.noEmpty, "noempty", false, "exclude empty files in difference")
+	flag.BoolVar(&res.noHidden, "nohidden", false, "exclude hidden files in difference")
+	flag.BoolVar(&res.perm, "perm", false, "consider permissions in difference")
+	flag.BoolVar(&res.recurse, "recurse", false, "recurse")
+	flag.BoolVar(&res.showVersion, "version", false, "show version")
+	flag.BoolVar(&res.verbose, "verbose", false, "debug logging to stderr")
+	flag.Parse()
+
+	switch res.hashType {
+	case "md5", "sha", "sha1":
+	default:
+		log.Fatalf("invalid hash type: %s expect md5 or sha1", res.hashType)
+	}
+
+	return
+}
+
+var fnLog func(format string, v ...interface{}) = nil
+
+func vLog(format string, v ...interface{}) {
+	if fnLog != nil {
+		fnLog(format, v...)
+	}
+}
+
 type fileWalk struct {
 	name string
 	fi   os.FileInfo
@@ -34,19 +75,13 @@ type fileAttrsExt struct {
 }
 type fileAttrsExtMap map[fileAttrsExt][]string
 
-func vLog(format string, v ...interface{}) {
-	if verbose {
-		log.Printf(format, v...)
-	}
-}
-
-func computeHash(filename string) (string, error) {
-	file, err := os.Open(filename)
+func computeHash(filename, hashType string) (string, error) {
+	f, err := os.Open(filename)
 	if err != nil {
 		vLog("Error opening: %s [%s]", filename, err)
 		return "", err
 	}
-	defer file.Close()
+	defer f.Close()
 
 	var h hash.Hash
 	switch hashType {
@@ -55,9 +90,10 @@ func computeHash(filename string) (string, error) {
 	case "sha", "sha1":
 		h = sha1.New()
 	default:
-		log.Fatalf("Invalid hash type: %s", hashType)
+		return "", fmt.Errorf("invalid hash type: %s", hashType)
 	}
-	if _, err := io.Copy(h, file); err != nil {
+
+	if _, err = io.Copy(h, f); err != nil {
 		vLog("Error hashing file: %s [%s]", filename, err)
 		return "", err
 	}
@@ -66,7 +102,7 @@ func computeHash(filename string) (string, error) {
 	return hex.EncodeToString(sum), nil
 }
 
-func genFilesRecursive(paths []string) (res chan fileWalk) {
+func genFilesRecursive(paths []string, bufferSize int, noEmpty, noHidden bool) (res chan fileWalk) {
 	res = make(chan fileWalk, bufferSize)
 
 	var wg sync.WaitGroup
@@ -78,10 +114,10 @@ func genFilesRecursive(paths []string) (res chan fileWalk) {
 		go func() {
 			defer wg.Done()
 
-			if err := filepath.Walk(currentPath, func(path string, info os.FileInfo, err error) error {
-				if err != nil {
-					vLog("Error walking path: %s", err)
-					return nil
+			if err := filepath.Walk(currentPath, func(path string, info os.FileInfo, errIn error) error {
+				if errIn != nil {
+					vLog("Error walking path: %s", errIn)
+					return errIn
 				}
 
 				vLog("Found file: %s", path)
@@ -116,28 +152,29 @@ func genFilesRecursive(paths []string) (res chan fileWalk) {
 
 	return
 }
+
 func addWildCard(s string) string {
 	if len(s) == 0 {
 		return "*"
 	}
+
 	if s[len(s)-1] == '/' {
 		return s + "*"
 	}
+
 	return s + "/*"
 }
 
-func genFiles(paths []string) (res chan fileWalk) {
+func genFiles(paths []string, bufferSize int, noEmpty, noHidden bool) (res chan fileWalk) {
 	res = make(chan fileWalk, bufferSize)
 
 	var wg sync.WaitGroup
 	for i := 0; i < len(paths); i++ {
 		wg.Add(1)
-		currentPath := paths[i]
+		path := addWildCard(paths[i])
 
 		go func() {
 			defer wg.Done()
-
-			path := addWildCard(currentPath)
 
 			vLog("Globbing path: %s", path)
 			files, err := filepath.Glob(path)
@@ -182,7 +219,7 @@ func genFiles(paths []string) (res chan fileWalk) {
 	return
 }
 
-func gatherFiles(ch <-chan fileWalk) (res chan fileAttrs) {
+func gatherFiles(ch <-chan fileWalk, bufferSize int, perm bool) (res chan fileAttrs) {
 	res = make(chan fileAttrs, bufferSize)
 
 	var wg sync.WaitGroup
@@ -222,7 +259,7 @@ func gatherFiles(ch <-chan fileWalk) (res chan fileAttrs) {
 	return
 }
 
-func hashFiles(ch <-chan fileAttrs) (res chan fileAttrsExt) {
+func hashFiles(ch <-chan fileAttrs, bufferSize int, hashType string) (res chan fileAttrsExt) {
 	res = make(chan fileAttrsExt, bufferSize)
 
 	var wg sync.WaitGroup
@@ -233,8 +270,7 @@ func hashFiles(ch <-chan fileAttrs) (res chan fileAttrsExt) {
 		go func() {
 			defer wg.Done()
 
-			h, err := computeHash(f1.name)
-			if err == nil {
+			if h, err := computeHash(f1.name, hashType); err == nil {
 				vLog("%s hash for %s: %s", hashType, f1.name, h)
 				res <- fileAttrsExt{name: f1.name, size: f1.size, mode: f1.mode, hash: h}
 			} else {
@@ -251,7 +287,7 @@ func hashFiles(ch <-chan fileAttrs) (res chan fileAttrsExt) {
 	return
 }
 
-func distillFiles(ch <-chan fileAttrsExt) (res chan []string) {
+func distillFiles(ch <-chan fileAttrsExt, bufferSize int) (res chan []string) {
 	res = make(chan []string, bufferSize)
 
 	var wg sync.WaitGroup
@@ -285,66 +321,41 @@ func distillFiles(ch <-chan fileAttrsExt) (res chan []string) {
 
 func printFilenames(ch <-chan []string) {
 	once := false
-	for filesets := range ch {
+	for f := range ch {
 		if once {
 			fmt.Println()
 		}
 		once = true
 
-		for _, v := range filesets {
+		for _, v := range f {
 			fmt.Println(v)
 		}
 	}
 }
 
-var bufferSize int
-var hashType string
-var noEmpty bool
-var noHidden bool
-var perm bool
-var recurse bool
-var showVersion bool
-var verbose bool
-
-func init() {
-	flag.IntVar(&bufferSize, "buffer", 0, "buffer size used for channel pipeline")
-	flag.StringVar(&hashType, "hash", "md5", "hash type of md5 or sha1")
-	flag.BoolVar(&noEmpty, "noempty", false, "exclude empty files in difference")
-	flag.BoolVar(&noHidden, "nohidden", false, "exclude hidden files in difference")
-	flag.BoolVar(&perm, "perm", false, "consider permissions in difference")
-	flag.BoolVar(&recurse, "recurse", false, "recurse")
-	flag.BoolVar(&showVersion, "version", false, "show version")
-	flag.BoolVar(&verbose, "verbose", false, "debug logging to stderr")
-	flag.Parse()
-
-	switch hashType {
-	case "md5", "sha", "sha1":
-	default:
-		log.Fatalf("Invalid hash type: %s. Expect md5 or sha1.", hashType)
-	}
-}
-
-var version = "v0.1"
-
 func main() {
-	if showVersion {
-		fmt.Println(version)
+	args := newArgs()
+	if args.showVersion {
+		fmt.Println(theVersion)
+	}
+	if args.verbose {
+		fnLog = log.Printf
 	}
 
-	// main pipeline
+	// pipeline
 
 	var genChan chan fileWalk
-	if recurse {
-		genChan = genFilesRecursive(flag.Args())
+	if args.recurse {
+		genChan = genFilesRecursive(flag.Args(), args.bufferSize, args.noEmpty, args.noHidden)
 	} else {
-		genChan = genFiles(flag.Args())
+		genChan = genFiles(flag.Args(), args.bufferSize, args.noEmpty, args.noHidden)
 	}
 
-	gatherChan := gatherFiles(genChan)
+	gatherChan := gatherFiles(genChan, args.bufferSize, args.perm)
 
-	hashChan := hashFiles(gatherChan)
+	hashChan := hashFiles(gatherChan, args.bufferSize, args.hashType)
 
-	distillChan := distillFiles(hashChan)
+	distillChan := distillFiles(hashChan, args.bufferSize)
 
 	printFilenames(distillChan)
 }
