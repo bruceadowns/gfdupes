@@ -5,9 +5,9 @@ import (
 	"os"
 )
 
-func myWalk(currentPath string, info os.FileInfo, err error) error {
-	if err != nil {
-		return err
+func myWalk(currentPath string, info os.FileInfo, errIn error) error {
+	if errIn != nil {
+		return errIn
 	}
 
 	if info.IsDir() {
@@ -24,7 +24,9 @@ func myWalk(currentPath string, info os.FileInfo, err error) error {
 
 		for _, fi := range fis {
 			if fi.Name() != "." && fi.Name() != ".." {
-				myWalk(currentPath+"/"+fi.Name(), fi, err)
+				if err := myWalk(currentPath+"/"+fi.Name(), fi, err); err != nil {
+					return err
+				}
 			}
 		}
 	} else {
