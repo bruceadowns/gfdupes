@@ -8,18 +8,23 @@ import (
 )
 
 func getShellScript(rootpath string) []string {
-	list := make([]string, 0)
+	var list []string
 
-	err := filepath.Walk(rootpath, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(rootpath, func(path string, info os.FileInfo, errIn error) error {
+		if errIn != nil {
+			return errIn
+		}
+
 		if info.IsDir() {
 			return nil
 		}
+
 		if filepath.Ext(path) == ".sh" {
 			list = append(list, path)
 		}
+
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		log.Fatal(err)
 	}
 
